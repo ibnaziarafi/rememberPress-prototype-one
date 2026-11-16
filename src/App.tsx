@@ -14,6 +14,30 @@ import { PhotoStoriesView } from './components/PhotoStoriesView';
 import { BookLayoutView } from './components/BookLayoutView';
 import { parseJsonResponse } from './utils/api';
 
+const STORAGE_KEY = 'rememberpress_workspace_v1';
+
+function readLocalWorkspace(): BookWorkspaceData | null {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as BookWorkspaceData;
+    if (parsed?.settings && Array.isArray(parsed?.chapters)) {
+      return parsed;
+    }
+  } catch {
+    // Ignore storage read issues
+  }
+  return null;
+}
+
+function writeLocalWorkspace(data: BookWorkspaceData): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<BookWorkspaceData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,21 +48,47 @@ export default function App() {
 
   useEffect(() => {
     async function loadBook() {
+      const localCached = readLocalWorkspace();
       try {
         const res = await fetch('/api/book');
-        const data = await parseJsonResponse<BookWorkspaceData>(
+        const serverData = await parseJsonResponse<BookWorkspaceData>(
           res,
           'Could not load Remember Press workspace'
         );
-        setWorkspace(data);
+
+        // If a stateless serverless instance cold-started while the browser has newer local work, sync it back
+        if (
+          localCached &&
+          localCached.chapters.length > serverData.chapters.length
+        ) {
+          setWorkspace(localCached);
+          fetch('/api/book/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(localCached),
+          }).catch(() => {});
+        } else {
+          setWorkspace(serverData);
+          writeLocalWorkspace(serverData);
+        }
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : 'Failed to load workspace.');
+        if (localCached) {
+          setWorkspace(localCached);
+        } else {
+          setLoadError(err instanceof Error ? err.message : 'Failed to load workspace.');
+        }
       } finally {
         setLoading(false);
       }
     }
     loadBook();
   }, []);
+
+  useEffect(() => {
+    if (workspace) {
+      writeLocalWorkspace(workspace);
+    }
+  }, [workspace]);
 
   function handleSelectPromptForInterview(prompt: GuidedPrompt) {
     setSelectedPrompt(prompt);
